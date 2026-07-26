@@ -20,18 +20,43 @@
   .files-list { font-size:13px; color:#555; }
   .flag { color:#b30000; }
   .hint { font-size:12px; color:#666; margin-top:6px; }
+  .dict-group { margin-bottom:18px; }
+  .dict-group h4 { margin:0 0 6px; font-size:14px; }
+  .dict-table { width:100%; border-collapse:collapse; margin-bottom:6px; }
+  .dict-table td, .dict-table th { padding:3px 6px; text-align:right; }
+  .dict-table th { font-size:12px; color:#666; font-weight:normal; }
+  .dict-table input { width:100%; box-sizing:border-box; padding:5px 6px; font-size:13px; border:1px solid #ccc; border-radius:4px; }
+  .dict-table input.ltr-input { direction:ltr; text-align:left; font-family:monospace; }
+  .dict-table input:disabled { background:#f0f0f0; color:#555; }
+  button.small { padding:4px 10px; font-size:12px; border-radius:4px; }
 </style>
 </head>
 <body>
 <div id="root"></div>
 
 <script type="text/babel">
-const { useState, useMemo } = React;
+const { useState, useEffect } = React;
 
 // קבועים פנימיים שנגזרים ישירות מקוד ה-ARG של הספק (לא ניתנים לעריכה - אלה לא ערכים "עיצוביים")
 const LETTER_TO_KEY = { E: "earrings", N: "necklaces", B: "bracelets", R: "rings" };
 const PLATING_DIGIT_TO_KEY = { "1": "rh", "2": "gold", "3": "rose" };
 const STONE_DIGIT_TO_KEY = { "0": "plain", "1": "white", "2": "blue", "3": "green", "4": "black", "6": "red", "7": "aqua", "8": "pink" };
+
+// סדר קטגוריות רצוי בפלט: שרשראות → צמידים → טבעות → עגילים
+const CATEGORY_SORT_ORDER = { N: 0, B: 1, R: 2, E: 3 };
+
+// כוכבית בקוד ה-ARG מציינת "נטו" (מחיר נטו לאחר חישוב) - לא קשור לסטטוס "חדש"/"רגיל" של ה-sheet
+const REMARK_RULES = [
+  { re: /silver-?rhd/i, text: "כסף 925 ציפוי רודיום" },
+  { re: /brass-?14k/i, text: "ציפוי זהב 14K (2 מיקרון)" },
+  { re: /brass-?rose/i, text: "ציפוי רוזגולד (2 מיקרון)" }
+];
+
+function mapRemark(remarkText, platingText) {
+  const source = `${remarkText} ${platingText}`;
+  const rule = REMARK_RULES.find((r) => r.re.test(source));
+  return rule ? rule.text : (remarkText || platingText);
+}
 
 // המילון הבא כן ניתן לעריכה מלאה בממשק (תיבת הטקסט) - אפשר להוסיף/לשנות כל ערך וגם להוסיף עוד אפשרויות
 // לכל אחת מהרשימות (categories/subcategories/subsubcategories/stone_shapes/shapes/...) - הן ישמשו כרשימת
@@ -112,6 +137,33 @@ const DEFAULT_TRANSLATIONS = {
   }
 };
 
+const TRANSLATIONS_STORAGE_KEY = "argento_converter_translations_v1";
+
+// הגדרת קבוצות המילון לעורך הטבלאות:
+// fixed-map  = מפתחות קבועים (נגזרים מקוד ה-ARG עצמו) - אפשר לערוך רק את התרגום, לא להוסיף/למחוק שורות
+// editable-map = מילון מפתח(אנגלית)->תרגום, אפשר להוסיף/למחוק/לערוך גם את המפתח (המפתח משמש להתאמה אוטומטית מהתיאור בקובץ המקור)
+// list = רשימת ערכים בעברית בלבד (dropdown לבחירה ידנית, לא מותאם אוטומטית)
+const DICT_GROUPS = [
+  { key: "base_types", label: "סוג בסיס (תיאור באנגלית מהקובץ ← עברית)", type: "editable-map" },
+  { key: "categories", label: "קטגוריה (רמה 1)", type: "fixed-map" },
+  { key: "materials", label: "צבע מתכת", type: "fixed-map" },
+  { key: "stone_colors", label: "צבע אבן", type: "fixed-map" },
+  { key: "stone_shapes", label: "צורת אבן (מזוהה מתוך התיאור)", type: "editable-map" },
+  { key: "shapes", label: "צורה כללית - תכשיט/תליון (מזוהה מתוך התיאור)", type: "editable-map" },
+  { key: "subcategories", label: "תת-קטגוריה (רשימה לבחירה ידנית מה-dropdown)", type: "list" },
+  { key: "subsubcategories", label: "תת-תת-קטגוריה (רשימה לבחירה ידנית מה-dropdown)", type: "list" }
+];
+
+function loadStoredTranslations() {
+  try {
+    const raw = localStorage.getItem(TRANSLATIONS_STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {
+    // localStorage לא זמין / JSON פגום - חוזרים לברירת המחדל
+  }
+  return DEFAULT_TRANSLATIONS;
+}
+
 const CODE_RE = /^(\*)?([A-Z]+)(\d+)-(\d+)-(\d+)-(.+)$/;
 const CI_RE = /CI-(\d+)/i;
 const MM_SIZE_RE = /\d+(\.\d+)?(\s*[*x×]\s*\d+(\.\d+)?)?\s*mm/i;
@@ -163,7 +215,7 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
       }
 
       const [, star, letter, baseSku, platingDigit, stoneDigit, sizeCode] = m;
-      const isNew = star ? "חדש" : "רגיל";
+      const tag = star ? "נטו" : "רגיל";
 
       const categoryKey = LETTER_TO_KEY[letter] || "";
       const category = translations.categories?.[categoryKey] || categoryKey;
@@ -230,7 +282,8 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
         source_row: sourceRow,
         supplier_no: supplierNo,
         arg_code_raw: codeRaw,
-        is_new: isNew,
+        type_letter: letter,
+        tag,
         category,
         base_sku: baseSku,
         material,
@@ -243,7 +296,7 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
         subcategory_raw: subcategoryRaw,
         quantity,
         tag_price: tagPrice,
-        remark: remark || platingText,
+        remark: mapRemark(remark, platingText),
         needs_review: flagReasons.length > 0 ? "כן" : "",
         flag_reason: flagReasons.join(" ; ")
       });
@@ -263,8 +316,49 @@ function setListDataValidation(ws, colIdx, rowCount, listRangeRef) {
   }
 }
 
-async function buildWorkbook(allParsed, allErrors, translations) {
+function extFromFileName(name) {
+  const m = String(name).match(/\.([a-zA-Z0-9]+)$/);
+  const ext = m ? m[1].toLowerCase() : "";
+  if (ext === "jpg") return "jpeg";
+  if (ext === "jpeg" || ext === "png" || ext === "gif") return ext;
+  return null; // ExcelJS תומך רק ב-jpeg/png/gif להטמעה
+}
+
+function buildFolderImageMap(imageFiles) {
+  const map = new Map();
+  (imageFiles || []).forEach((file) => {
+    const base = file.name.replace(/\.[^.]+$/, "");
+    map.set(base, file);
+  });
+  return map;
+}
+
+// חילוץ תמונות שמוטמעות בתוך קובץ המקור עצמו (עמודת Photo) - fallback בלבד, בעדיפות נמוכה מתיקיית התמונות
+async function extractSourceImages(arrayBuffer) {
+  const map = new Map();
+  try {
+    const wbImg = new ExcelJS.Workbook();
+    await wbImg.xlsx.load(arrayBuffer);
+    wbImg.worksheets.forEach((ws) => {
+      (ws.getImages() || []).forEach((img) => {
+        const media = wbImg.getImage(parseInt(img.imageId, 10));
+        if (!media) return;
+        const rowNum = Math.round(img.range.tl.row) + 1;
+        map.set(`${ws.name}::${rowNum}`, media);
+      });
+    });
+  } catch (e) {
+    // קובץ בלי תמונות מוטמעות / לא נתמך - מתעלמים, זה fallback בלבד
+  }
+  return map;
+}
+
+async function buildWorkbook(allParsed, allErrors, translations, folderImageMap, sourceImagesMap) {
   const wb = new ExcelJS.Workbook();
+
+  const sortedParsed = [...allParsed].sort(
+    (a, b) => (CATEGORY_SORT_ORDER[a.type_letter] ?? 99) - (CATEGORY_SORT_ORDER[b.type_letter] ?? 99)
+  );
 
   const listGroups = [
     { key: "A", values: Object.values(translations.categories || {}) },
@@ -291,38 +385,66 @@ async function buildWorkbook(allParsed, allErrors, translations) {
   wsVariants.views = [{ rightToLeft: true }];
   const variantCols = [
     ["arg_code_raw", "קוד ARG"],
-    ["is_new", "תג"],
+    ["image", "תמונה"],
+    ["tag", "תג"],
     ["category", "קטגוריה"],
-    ["base_sku", "מספר בסיס"],
-    ["material", "צבע מתכת"],
-    ["stone_color", "צבע אבן"],
-    ["stone_size", "גודל אבן (מ\"מ)"],
-    ["size_display", "מידה"],
-    ["description_base_he", "סוג בסיס (עברית)"],
-    ["stone_shape_he", "צורת אבן"],
-    ["shape_he", "צורה"],
     ["subcategory_final", "תת-קטגוריה"],
     ["subsubcategory_final", "תת-תת-קטגוריה"],
+    ["material", "צבע מתכת"],
+    ["stone_color", "צבע אבן"],
+    ["stone_shape_he", "צורת אבן"],
+    ["shape_he", "צורה"],
+    ["stone_size", "גודל אבן (מ\"מ)"],
+    ["size_display", "מידה"],
+    ["base_sku", "מספר בסיס"],
+    ["description_base_he", "סוג בסיס (עברית)"],
     ["quantity", "כמות"],
     ["tag_price", "מחיר"],
     ["remark", "הערה"],
     ["needs_review", "לבדיקה"]
   ];
   wsVariants.addRow(variantCols.map((c) => c[1]));
-  const emptyByDefault = new Set(["subcategory_final", "subsubcategory_final"]);
-  allParsed.forEach((row) => {
+  const emptyByDefault = new Set(["subcategory_final", "subsubcategory_final", "image"]);
+  sortedParsed.forEach((row) => {
     wsVariants.addRow(variantCols.map(([key]) => (emptyByDefault.has(key) ? "" : row[key] ?? "")));
   });
 
   const colIdx = (key) => variantCols.findIndex((c) => c[0] === key) + 1;
-  setListDataValidation(wsVariants, colIdx("category"), allParsed.length, rangeFor("A"));
-  setListDataValidation(wsVariants, colIdx("subcategory_final"), allParsed.length, rangeFor("B"));
-  setListDataValidation(wsVariants, colIdx("subsubcategory_final"), allParsed.length, rangeFor("C"));
-  setListDataValidation(wsVariants, colIdx("material"), allParsed.length, rangeFor("D"));
-  setListDataValidation(wsVariants, colIdx("stone_color"), allParsed.length, rangeFor("E"));
-  setListDataValidation(wsVariants, colIdx("stone_shape_he"), allParsed.length, rangeFor("F"));
-  setListDataValidation(wsVariants, colIdx("shape_he"), allParsed.length, rangeFor("G"));
+  setListDataValidation(wsVariants, colIdx("category"), sortedParsed.length, rangeFor("A"));
+  setListDataValidation(wsVariants, colIdx("subcategory_final"), sortedParsed.length, rangeFor("B"));
+  setListDataValidation(wsVariants, colIdx("subsubcategory_final"), sortedParsed.length, rangeFor("C"));
+  setListDataValidation(wsVariants, colIdx("material"), sortedParsed.length, rangeFor("D"));
+  setListDataValidation(wsVariants, colIdx("stone_color"), sortedParsed.length, rangeFor("E"));
+  setListDataValidation(wsVariants, colIdx("stone_shape_he"), sortedParsed.length, rangeFor("F"));
+  setListDataValidation(wsVariants, colIdx("shape_he"), sortedParsed.length, rangeFor("G"));
   wsVariants.columns.forEach((col) => (col.width = 16));
+  wsVariants.getColumn(colIdx("image")).width = 14;
+
+  const imgColLetter = wsVariants.getColumn(colIdx("image")).letter;
+  for (let i = 0; i < sortedParsed.length; i++) {
+    const row = sortedParsed[i];
+    const rowNum = i + 2;
+    const codeNoStar = String(row.arg_code_raw || "").replace(/^\*/, "");
+    let buffer = null;
+    let extension = null;
+    const folderFile = folderImageMap && folderImageMap.get(codeNoStar);
+    if (folderFile) {
+      extension = extFromFileName(folderFile.name);
+      if (extension) buffer = await folderFile.arrayBuffer();
+    }
+    if (!buffer && sourceImagesMap) {
+      const media = sourceImagesMap.get(`${row.source_file}::${row.source_sheet}::${row.source_row}`);
+      if (media) {
+        buffer = media.buffer;
+        extension = media.extension;
+      }
+    }
+    if (buffer && extension) {
+      const imageId = wb.addImage({ buffer, extension });
+      wsVariants.getRow(rowNum).height = 70;
+      wsVariants.addImage(imageId, `${imgColLetter}${rowNum}:${imgColLetter}${rowNum}`);
+    }
+  }
 
   const wsSource = wb.addWorksheet("מקור");
   wsSource.views = [{ rightToLeft: true }];
@@ -335,7 +457,7 @@ async function buildWorkbook(allParsed, allErrors, translations) {
     ["arg_code_raw", "קוד ARG"]
   ];
   wsSource.addRow(sourceCols.map((c) => c[1]));
-  allParsed.forEach((row) => {
+  sortedParsed.forEach((row) => {
     wsSource.addRow(sourceCols.map(([key]) => row[key] ?? ""));
   });
   wsSource.columns.forEach((col) => (col.width = 18));
@@ -368,7 +490,7 @@ async function buildWorkbook(allParsed, allErrors, translations) {
     ["source_row", "שורה במקור"]
   ];
   wsFlags.addRow(flagCols.map((c) => c[1]));
-  allParsed.filter((r) => r.needs_review === "כן").forEach((row) => {
+  sortedParsed.filter((r) => r.needs_review === "כן").forEach((row) => {
     wsFlags.addRow(flagCols.map(([key]) => row[key] ?? ""));
   });
   wsFlags.columns.forEach((col) => (col.width = 22));
@@ -376,22 +498,180 @@ async function buildWorkbook(allParsed, allErrors, translations) {
   return wb;
 }
 
+function MapGroup({ group, dict, onChange }) {
+  const entries = Object.entries(dict || {});
+  const editableKey = group.type === "editable-map";
+
+  function updateKey(oldKey, newKey) {
+    const next = {};
+    entries.forEach(([k, v]) => {
+      next[k === oldKey ? newKey : k] = v;
+    });
+    onChange(next);
+  }
+  function updateValue(k, newValue) {
+    onChange({ ...dict, [k]: newValue });
+  }
+  function removeRow(k) {
+    const next = { ...dict };
+    delete next[k];
+    onChange(next);
+  }
+  function addRow() {
+    let newKey = "מונח_חדש";
+    let i = 1;
+    while (Object.prototype.hasOwnProperty.call(dict, newKey)) {
+      newKey = `מונח_חדש_${i++}`;
+    }
+    onChange({ ...dict, [newKey]: "" });
+  }
+
+  return (
+    <div className="dict-group">
+      <h4>{group.label}</h4>
+      <table className="dict-table">
+        <thead>
+          <tr>
+            <th>מקור (אנגלית)</th>
+            <th>תרגום לעברית</th>
+            {editableKey && <th></th>}
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map(([k, v]) => (
+            <tr key={k}>
+              <td>
+                {editableKey ? (
+                  <input className="ltr-input" value={k} onChange={(e) => updateKey(k, e.target.value)} />
+                ) : (
+                  <input className="ltr-input" value={k} disabled />
+                )}
+              </td>
+              <td>
+                <input value={v} onChange={(e) => updateValue(k, e.target.value)} />
+              </td>
+              {editableKey && (
+                <td>
+                  <button className="secondary small" onClick={() => removeRow(k)}>
+                    הסר
+                  </button>
+                </td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {editableKey && (
+        <button className="secondary small" onClick={addRow}>
+          + הוספת ערך
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ListGroup({ group, list, onChange }) {
+  const values = list || [];
+
+  function updateValue(idx, newValue) {
+    const next = [...values];
+    next[idx] = newValue;
+    onChange(next);
+  }
+  function removeRow(idx) {
+    onChange(values.filter((_, i) => i !== idx));
+  }
+  function addRow() {
+    onChange([...values, ""]);
+  }
+
+  return (
+    <div className="dict-group">
+      <h4>{group.label}</h4>
+      <table className="dict-table">
+        <tbody>
+          {values.map((v, idx) => (
+            <tr key={idx}>
+              <td>
+                <input value={v} onChange={(e) => updateValue(idx, e.target.value)} />
+              </td>
+              <td>
+                <button className="secondary small" onClick={() => removeRow(idx)}>
+                  הסר
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <button className="secondary small" onClick={addRow}>
+        + הוספת ערך
+      </button>
+    </div>
+  );
+}
+
+function TranslationsEditor({ translations, setTranslations }) {
+  return (
+    <div>
+      {DICT_GROUPS.map((group) =>
+        group.type === "list" ? (
+          <ListGroup
+            key={group.key}
+            group={group}
+            list={translations[group.key]}
+            onChange={(next) => setTranslations({ ...translations, [group.key]: next })}
+          />
+        ) : (
+          <MapGroup
+            key={group.key}
+            group={group}
+            dict={translations[group.key]}
+            onChange={(next) => setTranslations({ ...translations, [group.key]: next })}
+          />
+        )
+      )}
+    </div>
+  );
+}
+
 function App() {
   const [files, setFiles] = useState([]);
-  const [translationsText, setTranslationsText] = useState(
-    JSON.stringify(DEFAULT_TRANSLATIONS, null, 2)
-  );
+  const [imageFiles, setImageFiles] = useState([]);
+  const [translations, setTranslations] = useState(loadStoredTranslations);
+  const [showJsonEditor, setShowJsonEditor] = useState(false);
+  const [jsonDraft, setJsonDraft] = useState("");
+  const [jsonError, setJsonError] = useState("");
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
   const [running, setRunning] = useState(false);
 
-  const translations = useMemo(() => {
+  useEffect(() => {
     try {
-      return JSON.parse(translationsText);
+      localStorage.setItem(TRANSLATIONS_STORAGE_KEY, JSON.stringify(translations));
     } catch (e) {
-      return null;
+      // localStorage לא זמין - השינויים לא יישמרו בין טעינות, אבל ההרצה הנוכחית עדיין תעבוד
     }
-  }, [translationsText]);
+  }, [translations]);
+
+  function openJsonEditor() {
+    setJsonDraft(JSON.stringify(translations, null, 2));
+    setJsonError("");
+    setShowJsonEditor(true);
+  }
+  function applyJsonDraft() {
+    try {
+      const parsed = JSON.parse(jsonDraft);
+      setTranslations(parsed);
+      setJsonError("");
+    } catch (e) {
+      setJsonError("JSON לא תקין: " + e.message);
+    }
+  }
+  function resetTranslationsToDefault() {
+    if (!confirm("לאפס את מילון התרגום לברירת המחדל? כל השינויים שנשמרו יימחקו.")) return;
+    setTranslations(DEFAULT_TRANSLATIONS);
+  }
 
   async function handleRun() {
     setError("");
@@ -400,21 +680,21 @@ function App() {
       setError("יש לבחור קובץ אקסל אחד או יותר.");
       return;
     }
-    if (!translations) {
-      setError("מילון התרגום אינו JSON תקין.");
-      return;
-    }
     setRunning(true);
     try {
       let allParsed = [];
       let allErrors = [];
+      const sourceImagesMap = new Map();
       for (const file of files) {
         const buf = await file.arrayBuffer();
         const { parsed, errors } = parseWorkbookFile(file, buf, translations);
         allParsed = allParsed.concat(parsed);
         allErrors = allErrors.concat(errors);
+        const fileImages = await extractSourceImages(buf);
+        fileImages.forEach((v, k) => sourceImagesMap.set(`${file.name}::${k}`, v));
       }
-      const wb = await buildWorkbook(allParsed, allErrors, translations);
+      const folderImageMap = buildFolderImageMap(imageFiles);
+      const wb = await buildWorkbook(allParsed, allErrors, translations, folderImageMap, sourceImagesMap);
       const buffer = await wb.xlsx.writeBuffer();
       const blob = new Blob([buffer], { type: "application/octet-stream" });
       const url = URL.createObjectURL(blob);
@@ -456,21 +736,56 @@ function App() {
       </div>
 
       <div className="box">
-        <h3>2. מילון תרגום וקטגוריות (אפשר לערוך/להוסיף ערכים)</h3>
+        <h3>2. תיקיית תמונות (אופציונלי)</h3>
         <p className="hint">
-          כל הרשימות כאן (categories / subcategories / subsubcategories / materials / stone_colors /
-          stone_shapes / shapes) הופכות לרשימות הבחירה (dropdown) בקובץ הפלט. אפשר להוסיף כל ערך חדש
-          שמתגלה - פשוט להוסיף שורה/מפתח נוסף לרשימה המתאימה.
+          בחירת תיקייה שלמה - כל תמונה בשם זהה לקוד ה-ARG (בלי כוכבית, למשל B1000531-1-1-M.jpg)
+          תוטמע אוטומטית בעמודת "תמונה" ליד השורה המתאימה. אם לא נמצאה תמונה בתיקייה - ננסה להשתמש
+          בתמונה שמוטמעת בעמודת Photo בקובץ המקור עצמו (עדיפות שנייה, אם קיימת).
         </p>
-        <textarea
-          value={translationsText}
-          onChange={(e) => setTranslationsText(e.target.value)}
+        <input
+          type="file"
+          webkitdirectory=""
+          directory=""
+          multiple
+          onChange={(e) => setImageFiles(Array.from(e.target.files))}
         />
-        {!translations && <div className="flag">JSON לא תקין</div>}
+        <div className="files-list">
+          {imageFiles.length > 0 && <span>{imageFiles.length} תמונות נבחרו</span>}
+        </div>
       </div>
 
       <div className="box">
-        <h3>3. הרצה והורדה</h3>
+        <h3>3. מילון תרגום וקטגוריות (אפשר לערוך/להוסיף ערכים)</h3>
+        <p className="hint">
+          כל הרשימות כאן הופכות לרשימות הבחירה (dropdown) בקובץ הפלט. אפשר להוסיף שורה חדשה בכל טבלה
+          שבה יש כפתור "הוספת ערך", או להסיר שורה עם "הסר". השינויים נשמרים אוטומטית בדפדפן הזה
+          ויישארו גם בפעם הבאה שתפתחי את הדף.
+        </p>
+        <TranslationsEditor translations={translations} setTranslations={setTranslations} />
+
+        <div style={{ marginTop: 12 }}>
+          <button className="secondary small" onClick={resetTranslationsToDefault}>
+            איפוס לברירת מחדל
+          </button>{" "}
+          <button className="secondary small" onClick={() => (showJsonEditor ? setShowJsonEditor(false) : openJsonEditor())}>
+            {showJsonEditor ? "סגירת עריכה מתקדמת" : "עריכה מתקדמת (JSON)"}
+          </button>
+        </div>
+
+        {showJsonEditor && (
+          <div style={{ marginTop: 12 }}>
+            <p className="hint">
+              עריכה ישירה של כל המילון כ-JSON. לחיצה על "החלת שינויים" תעדכן את הטבלאות למעלה.
+            </p>
+            <textarea value={jsonDraft} onChange={(e) => setJsonDraft(e.target.value)} />
+            {jsonError && <div className="flag">{jsonError}</div>}
+            <button onClick={applyJsonDraft}>החלת שינויים</button>
+          </div>
+        )}
+      </div>
+
+      <div className="box">
+        <h3>4. הרצה והורדה</h3>
         <button onClick={handleRun} disabled={running}>
           {running ? "מעבד..." : "הרץ המרה"}
         </button>

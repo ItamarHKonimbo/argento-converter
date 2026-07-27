@@ -46,10 +46,12 @@ const STONE_DIGIT_TO_KEY = { "0": "plain", "1": "white", "2": "blue", "3": "gree
 const CATEGORY_SORT_ORDER = { N: 0, B: 1, R: 2, E: 3 };
 
 // כוכבית בקוד ה-ARG מציינת "נטו" (מחיר נטו לאחר חישוב) - לא קשור לסטטוס "חדש"/"רגיל" של ה-sheet
+// מזהים לפי קוד הפלטינג עצמו (rhd/14k/rose) ולא לפי שם החומר (Silver/Brass) - שם החומר
+// הגיע עם שגיאות כתיב אצל הספק (למשל "Siver" במקום "Silver"), אבל קוד הפלטינג עצמו עקבי
 const REMARK_RULES = [
-  { re: /silver-?rhd/i, text: "כסף 925 ציפוי רודיום" },
-  { re: /brass-?14k/i, text: "ציפוי זהב 14K (2 מיקרון)" },
-  { re: /brass-?rose/i, text: "ציפוי רוזגולד (2 מיקרון)" }
+  { re: /rhd/i, text: "כסף 925 ציפוי רודיום" },
+  { re: /14k/i, text: "ציפוי זהב 14K (2 מיקרון)" },
+  { re: /rose/i, text: "ציפוי רוזגולד (2 מיקרון)" }
 ];
 
 function mapRemark(remarkText, platingText) {

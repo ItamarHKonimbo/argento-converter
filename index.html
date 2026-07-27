@@ -321,16 +321,37 @@ function extFromFileName(name) {
   const ext = m ? m[1].toLowerCase() : "";
   if (ext === "jpg") return "jpeg";
   if (ext === "jpeg" || ext === "png" || ext === "gif") return ext;
-  return null; // ExcelJS תומך רק ב-jpeg/png/gif להטמעה
+  return null; // ExcelJS תומך רק ב-jpeg/png/gif להטמעה ישירה - פורמטים אחרים (webp/bmp/...) מומרים ל-PNG בזמן ריצה
+}
+
+// מפתח התאמה בין שם קובץ תמונה לקוד ARG - חוסן מפני רווחים/אותיות גדולות-קטנות
+function normalizeImageKey(name) {
+  return String(name).trim().toLowerCase();
 }
 
 function buildFolderImageMap(imageFiles) {
   const map = new Map();
   (imageFiles || []).forEach((file) => {
     const base = file.name.replace(/\.[^.]+$/, "");
-    map.set(base, file);
+    map.set(normalizeImageKey(base), file);
   });
   return map;
+}
+
+// המרת תמונה בפורמט שExcelJS לא יודע להטמיע ישירות (webp/bmp/svg/...) ל-PNG, בעזרת קנבס בדפדפן
+async function convertImageToPng(file) {
+  try {
+    const bitmap = await createImageBitmap(file);
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    canvas.getContext("2d").drawImage(bitmap, 0, 0);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) return null;
+    return { buffer: await blob.arrayBuffer(), extension: "png" };
+  } catch (e) {
+    return null; // פורמט שהדפדפן עצמו לא יודע לפענח
+  }
 }
 
 // חילוץ תמונות שמוטמעות בתוך קובץ המקור עצמו (עמודת Photo) - fallback בלבד, בעדיפות נמוכה מתיקיית התמונות
@@ -421,28 +442,44 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
   wsVariants.getColumn(colIdx("image")).width = 14;
 
   const imgColLetter = wsVariants.getColumn(colIdx("image")).letter;
+  const imageStats = { fromFolder: 0, convertedFormat: 0, fromSourceFallback: 0, notFound: 0, unsupportedFormat: [] };
   for (let i = 0; i < sortedParsed.length; i++) {
     const row = sortedParsed[i];
     const rowNum = i + 2;
-    const codeNoStar = String(row.arg_code_raw || "").replace(/^\*/, "");
+    const codeNoStar = normalizeImageKey(String(row.arg_code_raw || "").replace(/^\*/, ""));
     let buffer = null;
     let extension = null;
     const folderFile = folderImageMap && folderImageMap.get(codeNoStar);
     if (folderFile) {
       extension = extFromFileName(folderFile.name);
-      if (extension) buffer = await folderFile.arrayBuffer();
+      if (extension) {
+        buffer = await folderFile.arrayBuffer();
+        imageStats.fromFolder++;
+      } else {
+        const converted = await convertImageToPng(folderFile);
+        if (converted) {
+          buffer = converted.buffer;
+          extension = converted.extension;
+          imageStats.convertedFormat++;
+        } else {
+          imageStats.unsupportedFormat.push(folderFile.name);
+        }
+      }
     }
     if (!buffer && sourceImagesMap) {
       const media = sourceImagesMap.get(`${row.source_file}::${row.source_sheet}::${row.source_row}`);
       if (media) {
         buffer = media.buffer;
         extension = media.extension;
+        imageStats.fromSourceFallback++;
       }
     }
     if (buffer && extension) {
       const imageId = wb.addImage({ buffer, extension });
       wsVariants.getRow(rowNum).height = 70;
       wsVariants.addImage(imageId, `${imgColLetter}${rowNum}:${imgColLetter}${rowNum}`);
+    } else if (!folderFile) {
+      imageStats.notFound++;
     }
   }
 
@@ -495,7 +532,7 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
   });
   wsFlags.columns.forEach((col) => (col.width = 22));
 
-  return wb;
+  return { wb, imageStats };
 }
 
 function MapGroup({ group, dict, onChange }) {
@@ -682,6 +719,7 @@ function App() {
     }
     setRunning(true);
     try {
+      const folderImageMap = buildFolderImageMap(imageFiles);
       let allParsed = [];
       let allErrors = [];
       const sourceImagesMap = new Map();
@@ -690,11 +728,18 @@ function App() {
         const { parsed, errors } = parseWorkbookFile(file, buf, translations);
         allParsed = allParsed.concat(parsed);
         allErrors = allErrors.concat(errors);
-        const fileImages = await extractSourceImages(buf);
-        fileImages.forEach((v, k) => sourceImagesMap.set(`${file.name}::${k}`, v));
+
+        // חילוץ תמונות מהקובץ המקורי (ExcelJS, כבד) נעשה רק אם יש שורה שלא נמצאה לה תמונה בתיקייה
+        const needsSourceFallback = parsed.some((row) => {
+          const key = normalizeImageKey(String(row.arg_code_raw || "").replace(/^\*/, ""));
+          return !folderImageMap.has(key);
+        });
+        if (needsSourceFallback) {
+          const fileImages = await extractSourceImages(buf);
+          fileImages.forEach((v, k) => sourceImagesMap.set(`${file.name}::${k}`, v));
+        }
       }
-      const folderImageMap = buildFolderImageMap(imageFiles);
-      const wb = await buildWorkbook(allParsed, allErrors, translations, folderImageMap, sourceImagesMap);
+      const { wb, imageStats } = await buildWorkbook(allParsed, allErrors, translations, folderImageMap, sourceImagesMap);
       const buffer = await wb.xlsx.writeBuffer();
       const blob = new Blob([buffer], { type: "application/octet-stream" });
       const url = URL.createObjectURL(blob);
@@ -703,7 +748,8 @@ function App() {
         url,
         total: allParsed.length,
         errors: allErrors.length,
-        flagged: flaggedCount
+        flagged: flaggedCount,
+        imageStats
       });
     } catch (e) {
       setError("שגיאה בעיבוד הקבצים: " + e.message);
@@ -797,6 +843,16 @@ function App() {
               <span>שגיאות: {result.errors}</span>
               <span>דגלים לבדיקה: {result.flagged}</span>
             </div>
+            {result.imageStats && (
+              <p className="hint">
+                תמונות: {result.imageStats.fromFolder} מהתיקייה
+                {result.imageStats.convertedFormat > 0 && ` (מהן ${result.imageStats.convertedFormat} הומרו מפורמט לא-נתמך)`}
+                {result.imageStats.fromSourceFallback > 0 && `, ${result.imageStats.fromSourceFallback} מהקובץ המקורי`}
+                , {result.imageStats.notFound} שורות בלי תמונה בכלל
+                {result.imageStats.unsupportedFormat.length > 0 &&
+                  ` | לא ניתן להטמיע (${result.imageStats.unsupportedFormat.length}): ${result.imageStats.unsupportedFormat.join(", ")}`}
+              </p>
+            )}
             <a href={result.url} download="argento-variants-merged.xlsx">
               <button className="secondary">הורד קובץ מאוחד</button>
             </a>

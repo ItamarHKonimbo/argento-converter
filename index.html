@@ -275,6 +275,10 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
         flagReasons.push(`לא נמצאה התאמת צורה עבור "${subcategoryRaw}"`);
       }
 
+      // התמונות של הספק צולמו לפי בסיס+פלטינג+אבן בלבד - וריאנטים באותה מידה שונה (S/M/L, מידות טבעת)
+      // חולקים את אותה תמונה, אז מפתח ההתאמה לתמונה לא כולל את המידה
+      const imageKey = `${letter}${baseSku}-${platingDigit}-${stoneDigit}`;
+
       parsed.push({
         source_file: file.name,
         ci_number: ciNumber,
@@ -282,6 +286,7 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
         source_row: sourceRow,
         supplier_no: supplierNo,
         arg_code_raw: codeRaw,
+        image_key: imageKey,
         type_letter: letter,
         tag,
         category,
@@ -324,16 +329,30 @@ function extFromFileName(name) {
   return null; // ExcelJS תומך רק ב-jpeg/png/gif להטמעה ישירה - פורמטים אחרים (webp/bmp/...) מומרים ל-PNG בזמן ריצה
 }
 
-// מפתח התאמה בין שם קובץ תמונה לקוד ARG - חוסן מפני רווחים/אותיות גדולות-קטנות
-function normalizeImageKey(name) {
-  return String(name).trim().toLowerCase();
+// שמות קבצי התמונות של הספק לא תמיד מגיעים נקיים (רווח מקרי לפני המקף, מקף כפול וכו') -
+// מנקים רווחים ומקפים כפולים לפני חילוץ בסיס+פלטינג+אבן
+const IMAGE_KEY_RE = /^([A-Za-z]+)(\d+)-(\d+)-(\d+)/;
+
+function extractImageKey(rawName) {
+  const cleaned = String(rawName)
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/-{2,}/g, "-");
+  const m = cleaned.match(IMAGE_KEY_RE);
+  if (m) {
+    const [, letter, base, plating, stone] = m;
+    return `${letter.toUpperCase()}${base}-${plating}-${stone}`;
+  }
+  return cleaned.toUpperCase();
 }
 
 function buildFolderImageMap(imageFiles) {
   const map = new Map();
   (imageFiles || []).forEach((file) => {
     const base = file.name.replace(/\.[^.]+$/, "");
-    map.set(normalizeImageKey(base), file);
+    const key = extractImageKey(base);
+    // אם כבר יש תמונה לאותו מפתח (בסיס+פלטינג+אבן) - משאירים את הראשונה, לא דורסים
+    if (!map.has(key)) map.set(key, file);
   });
   return map;
 }
@@ -446,10 +465,9 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
   for (let i = 0; i < sortedParsed.length; i++) {
     const row = sortedParsed[i];
     const rowNum = i + 2;
-    const codeNoStar = normalizeImageKey(String(row.arg_code_raw || "").replace(/^\*/, ""));
     let buffer = null;
     let extension = null;
-    const folderFile = folderImageMap && folderImageMap.get(codeNoStar);
+    const folderFile = folderImageMap && folderImageMap.get(row.image_key);
     if (folderFile) {
       extension = extFromFileName(folderFile.name);
       if (extension) {
@@ -730,10 +748,7 @@ function App() {
         allErrors = allErrors.concat(errors);
 
         // חילוץ תמונות מהקובץ המקורי (ExcelJS, כבד) נעשה רק אם יש שורה שלא נמצאה לה תמונה בתיקייה
-        const needsSourceFallback = parsed.some((row) => {
-          const key = normalizeImageKey(String(row.arg_code_raw || "").replace(/^\*/, ""));
-          return !folderImageMap.has(key);
-        });
+        const needsSourceFallback = parsed.some((row) => !folderImageMap.has(row.image_key));
         if (needsSourceFallback) {
           const fileImages = await extractSourceImages(buf);
           fileImages.forEach((v, k) => sourceImagesMap.set(`${file.name}::${k}`, v));

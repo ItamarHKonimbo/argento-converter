@@ -323,14 +323,6 @@ function setListDataValidation(ws, colIdx, rowCount, listRangeRef) {
   }
 }
 
-function extFromFileName(name) {
-  const m = String(name).match(/\.([a-zA-Z0-9]+)$/);
-  const ext = m ? m[1].toLowerCase() : "";
-  if (ext === "jpg") return "jpeg";
-  if (ext === "jpeg" || ext === "png" || ext === "gif") return ext;
-  return null; // ExcelJS תומך רק ב-jpeg/png/gif להטמעה ישירה - פורמטים אחרים (webp/bmp/...) מומרים ל-PNG בזמן ריצה
-}
-
 // שמות קבצי התמונות של הספק לא תמיד מגיעים נקיים (רווח מקרי לפני המקף, מקף כפול וכו') -
 // מנקים רווחים ומקפים כפולים לפני חילוץ בסיס+פלטינג+אבן
 const IMAGE_KEY_RE = /^([A-Za-z]+)(\d+)-(\d+)-(\d+)/;
@@ -359,17 +351,23 @@ function buildFolderImageMap(imageFiles) {
   return map;
 }
 
-// המרת תמונה בפורמט שExcelJS לא יודע להטמיע ישירות (webp/bmp/svg/...) ל-PNG, בעזרת קנבס בדפדפן
-async function convertImageToPng(file) {
+const IMAGE_EMBED_MAX_DIMENSION = 500; // פיקסלים - זו תמונה ממוזערת בעמודה, לא צריך רזולוציה מלאה
+
+// כל תמונה (מכל פורמט שהדפדפן יודע לפענח - jpg/png/webp/bmp/...) עוברת הקטנה ודחיסה ל-JPEG
+// לפני הטמעה. הספק שולח תמונות מקור בגודל מלא (עד מגה-בייט+ לתמונה), וקובץ עם הרבה תמונות
+// כאלה גורם לדפדפן "לא להגיב" בזמן דחיסת ה-xlsx בסוף - הקטנה מקדימה פותרת גם את זה וגם
+// מייצרת קובץ פלט קטן בהרבה.
+async function prepareImageForEmbedding(fileOrBlob) {
   try {
-    const bitmap = await createImageBitmap(file);
+    const bitmap = await createImageBitmap(fileOrBlob);
+    const scale = Math.min(1, IMAGE_EMBED_MAX_DIMENSION / Math.max(bitmap.width, bitmap.height));
     const canvas = document.createElement("canvas");
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
-    canvas.getContext("2d").drawImage(bitmap, 0, 0);
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
     if (!blob) return null;
-    return { buffer: await blob.arrayBuffer(), extension: "png" };
+    return { buffer: await blob.arrayBuffer(), extension: "jpeg" };
   } catch (e) {
     return null; // פורמט שהדפדפן עצמו לא יודע לפענח
   }
@@ -463,10 +461,10 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
   wsVariants.getColumn(colIdx("image")).width = 28;
 
   const imgColLetter = wsVariants.getColumn(colIdx("image")).letter;
-  const imageStats = { fromFolder: 0, convertedFormat: 0, fromSourceFallback: 0, notFound: 0, unsupportedFormat: [] };
+  const imageStats = { fromFolder: 0, fromSourceFallback: 0, notFound: 0, unsupportedFormat: [] };
 
   // כל שורות המידה (S/M/L, מידות טבעת) של אותו בסיס+פלטינג+אבן חולקות תמונה אחת - מטמיעים אותה
-  // פעם אחת בלבד ומשתמשים חזרה ב-imageId, במקום לקרוא/להמיר/להטמיע את אותו קובץ שוב לכל שורה
+  // פעם אחת בלבד ומשתמשים חזרה ב-imageId, במקום לקרוא/להקטין/להטמיע את אותו קובץ שוב לכל שורה
   // (זה גם מונע ניפוח קובץ עם תמונות כפולות שגרם לשגיאת "Blob data is empty" בפתיחה ב-Google Sheets)
   const folderImageIdCache = new Map();
   const sourceImageIdCache = new Map();
@@ -477,27 +475,14 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
     if (folderImageIdCache.has(row.image_key)) {
       return { imageId: folderImageIdCache.get(row.image_key), folderFile };
     }
-    let buffer = null;
-    let extension = extFromFileName(folderFile.name);
-    let converted = false;
-    if (extension) {
-      buffer = await folderFile.arrayBuffer();
-    } else {
-      const conv = await convertImageToPng(folderFile);
-      if (conv) {
-        buffer = conv.buffer;
-        extension = conv.extension;
-        converted = true;
-      }
-    }
-    if (!buffer || !buffer.byteLength) {
+    const prepared = await prepareImageForEmbedding(folderFile);
+    if (!prepared || !prepared.buffer || !prepared.buffer.byteLength) {
       imageStats.unsupportedFormat.push(folderFile.name);
       folderImageIdCache.set(row.image_key, null);
       return { imageId: null, folderFile };
     }
-    const imageId = wb.addImage({ buffer, extension });
+    const imageId = wb.addImage({ buffer: prepared.buffer, extension: prepared.extension });
     folderImageIdCache.set(row.image_key, imageId);
-    if (converted) imageStats.convertedFormat++;
     return { imageId, folderFile };
   }
 
@@ -507,7 +492,9 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
     if (sourceImageIdCache.has(key)) return sourceImageIdCache.get(key);
     const media = sourceImagesMap.get(key);
     if (!media || !media.buffer || !media.buffer.byteLength) return null;
-    const imageId = wb.addImage({ buffer: media.buffer, extension: media.extension });
+    const prepared = await prepareImageForEmbedding(new Blob([media.buffer]));
+    if (!prepared || !prepared.buffer || !prepared.buffer.byteLength) return null;
+    const imageId = wb.addImage({ buffer: prepared.buffer, extension: prepared.extension });
     sourceImageIdCache.set(key, imageId);
     return imageId;
   }
@@ -515,6 +502,8 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
   for (let i = 0; i < sortedParsed.length; i++) {
     const row = sortedParsed[i];
     const rowNum = i + 2;
+    // נותנים לדפדפן "לנשום" כל כמה שורות כדי שלא יחשוב שהעמוד קפא בזמן עיבוד הרבה תמונות
+    if (i % 8 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
     const { imageId: folderImageId, folderFile } = await resolveFolderImageId(row);
     let imageId = folderImageId;
     if (imageId !== null) {
@@ -880,6 +869,12 @@ function App() {
         <button onClick={handleRun} disabled={running}>
           {running ? "מעבד..." : "הרץ המרה"}
         </button>
+        {running && (
+          <p className="hint">
+            אם יש הרבה תמונות זה יכול לקחת כמה דקות והדפדפן עשוי להציג "הדף לא מגיב" - אין צורך
+            לסגור את הטאב, זה ימשיך לרוץ ברקע.
+          </p>
+        )}
         {error && <p className="flag">{error}</p>}
         {result && (
           <div style={{ marginTop: 12 }}>
@@ -891,7 +886,6 @@ function App() {
             {result.imageStats && (
               <p className="hint">
                 תמונות: {result.imageStats.fromFolder} מהתיקייה
-                {result.imageStats.convertedFormat > 0 && ` (מהן ${result.imageStats.convertedFormat} הומרו מפורמט לא-נתמך)`}
                 {result.imageStats.fromSourceFallback > 0 && `, ${result.imageStats.fromSourceFallback} מהקובץ המקורי`}
                 , {result.imageStats.notFound} שורות בלי תמונה בכלל
                 {result.imageStats.unsupportedFormat.length > 0 &&

@@ -460,43 +460,71 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
   setListDataValidation(wsVariants, colIdx("stone_shape_he"), sortedParsed.length, rangeFor("F"));
   setListDataValidation(wsVariants, colIdx("shape_he"), sortedParsed.length, rangeFor("G"));
   wsVariants.columns.forEach((col) => (col.width = 16));
-  wsVariants.getColumn(colIdx("image")).width = 14;
+  wsVariants.getColumn(colIdx("image")).width = 28;
 
   const imgColLetter = wsVariants.getColumn(colIdx("image")).letter;
   const imageStats = { fromFolder: 0, convertedFormat: 0, fromSourceFallback: 0, notFound: 0, unsupportedFormat: [] };
+
+  // כל שורות המידה (S/M/L, מידות טבעת) של אותו בסיס+פלטינג+אבן חולקות תמונה אחת - מטמיעים אותה
+  // פעם אחת בלבד ומשתמשים חזרה ב-imageId, במקום לקרוא/להמיר/להטמיע את אותו קובץ שוב לכל שורה
+  // (זה גם מונע ניפוח קובץ עם תמונות כפולות שגרם לשגיאת "Blob data is empty" בפתיחה ב-Google Sheets)
+  const folderImageIdCache = new Map();
+  const sourceImageIdCache = new Map();
+
+  async function resolveFolderImageId(row) {
+    const folderFile = folderImageMap && folderImageMap.get(row.image_key);
+    if (!folderFile) return { imageId: null, folderFile: null };
+    if (folderImageIdCache.has(row.image_key)) {
+      return { imageId: folderImageIdCache.get(row.image_key), folderFile };
+    }
+    let buffer = null;
+    let extension = extFromFileName(folderFile.name);
+    let converted = false;
+    if (extension) {
+      buffer = await folderFile.arrayBuffer();
+    } else {
+      const conv = await convertImageToPng(folderFile);
+      if (conv) {
+        buffer = conv.buffer;
+        extension = conv.extension;
+        converted = true;
+      }
+    }
+    if (!buffer || !buffer.byteLength) {
+      imageStats.unsupportedFormat.push(folderFile.name);
+      folderImageIdCache.set(row.image_key, null);
+      return { imageId: null, folderFile };
+    }
+    const imageId = wb.addImage({ buffer, extension });
+    folderImageIdCache.set(row.image_key, imageId);
+    if (converted) imageStats.convertedFormat++;
+    return { imageId, folderFile };
+  }
+
+  async function resolveSourceFallbackId(row) {
+    if (!sourceImagesMap) return null;
+    const key = `${row.source_file}::${row.source_sheet}::${row.source_row}`;
+    if (sourceImageIdCache.has(key)) return sourceImageIdCache.get(key);
+    const media = sourceImagesMap.get(key);
+    if (!media || !media.buffer || !media.buffer.byteLength) return null;
+    const imageId = wb.addImage({ buffer: media.buffer, extension: media.extension });
+    sourceImageIdCache.set(key, imageId);
+    return imageId;
+  }
+
   for (let i = 0; i < sortedParsed.length; i++) {
     const row = sortedParsed[i];
     const rowNum = i + 2;
-    let buffer = null;
-    let extension = null;
-    const folderFile = folderImageMap && folderImageMap.get(row.image_key);
-    if (folderFile) {
-      extension = extFromFileName(folderFile.name);
-      if (extension) {
-        buffer = await folderFile.arrayBuffer();
-        imageStats.fromFolder++;
-      } else {
-        const converted = await convertImageToPng(folderFile);
-        if (converted) {
-          buffer = converted.buffer;
-          extension = converted.extension;
-          imageStats.convertedFormat++;
-        } else {
-          imageStats.unsupportedFormat.push(folderFile.name);
-        }
-      }
+    const { imageId: folderImageId, folderFile } = await resolveFolderImageId(row);
+    let imageId = folderImageId;
+    if (imageId !== null) {
+      imageStats.fromFolder++;
+    } else {
+      imageId = await resolveSourceFallbackId(row);
+      if (imageId !== null) imageStats.fromSourceFallback++;
     }
-    if (!buffer && sourceImagesMap) {
-      const media = sourceImagesMap.get(`${row.source_file}::${row.source_sheet}::${row.source_row}`);
-      if (media) {
-        buffer = media.buffer;
-        extension = media.extension;
-        imageStats.fromSourceFallback++;
-      }
-    }
-    if (buffer && extension) {
-      const imageId = wb.addImage({ buffer, extension });
-      wsVariants.getRow(rowNum).height = 70;
+    if (imageId !== null) {
+      wsVariants.getRow(rowNum).height = 140;
       wsVariants.addImage(imageId, `${imgColLetter}${rowNum}:${imgColLetter}${rowNum}`);
     } else if (!folderFile) {
       imageStats.notFound++;
@@ -595,8 +623,8 @@ function MapGroup({ group, dict, onChange }) {
           </tr>
         </thead>
         <tbody>
-          {entries.map(([k, v]) => (
-            <tr key={k}>
+          {entries.map(([k, v], idx) => (
+            <tr key={idx}>
               <td>
                 {editableKey ? (
                   <input className="ltr-input" value={k} onChange={(e) => updateKey(k, e.target.value)} />

@@ -531,6 +531,10 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
       wsVariants.addImage(imageId, `${imgColLetter}${rowNum}:${imgColLetter}${rowNum}`);
     } else if (!folderFile) {
       imageStats.notFound++;
+      // אין התאמת תמונה - מסמנים "לבדיקה" כדי שהשורה תופיע בגיליון Flags להדבקה ידנית של תמונה
+      row.needs_review = "כן";
+      row.flag_reason = (row.flag_reason ? row.flag_reason + " ; " : "") + "לא נמצאה תמונה מתאימה בתיקייה";
+      wsVariants.getCell(rowNum, colIdx("needs_review")).value = "כן";
     }
   }
 

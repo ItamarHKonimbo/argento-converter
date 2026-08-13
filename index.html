@@ -410,9 +410,11 @@ async function extractSourceImages(arrayBuffer) {
 async function buildWorkbook(allParsed, allErrors, translations, folderImageMap, sourceImagesMap) {
   const wb = new ExcelJS.Workbook();
 
-  const sortedParsed = [...allParsed].sort(
-    (a, b) => (CATEGORY_SORT_ORDER[a.type_letter] ?? 99) - (CATEGORY_SORT_ORDER[b.type_letter] ?? 99)
-  );
+  const sortedParsed = [...allParsed].sort((a, b) => {
+    const catDiff = (CATEGORY_SORT_ORDER[a.type_letter] ?? 99) - (CATEGORY_SORT_ORDER[b.type_letter] ?? 99);
+    if (catDiff !== 0) return catDiff;
+    return Number(a.base_sku) - Number(b.base_sku); // תוך כל קטגוריה - מסודר לפי דגם (מספר בסיס)
+  });
 
   const listGroups = [
     { key: "A", values: Object.values(translations.categories || {}) },

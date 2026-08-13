@@ -188,18 +188,32 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
   for (const sheetName of wb.SheetNames) {
     const ws = wb.Sheets[sheetName];
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-    // Row 0 = title row, Row 1 = header row, data starts at index 2
+    // Row 0 = title row, Row 1 = header row, data starts at index 2.
+    // מזהים עמודות לפי השם בשורת הכותרת ולא לפי מיקום קבוע - הספק מוסיף/מזיז עמודות בין קבצים
+    // (למשל קבצים חדשים יותר כוללים "Stone Shape"/"Stone Size" לפני "tag price")
+    const headerRow = rows[1] || [];
+    const colIndex = (name) =>
+      headerRow.findIndex((h) => String(h).trim().toLowerCase() === name.toLowerCase());
+    const cell = (r, idx) => (idx >= 0 ? r[idx] : "");
+    const idxNo = colIndex("No.");
+    const idxCode = colIndex("ARG code");
+    const idxDescription = colIndex("Description");
+    const idxQuantity = colIndex("quantity");
+    const idxTagPrice = colIndex("tag price");
+    const idxPlating = colIndex("Plating color");
+    const idxRemark = colIndex("Remark");
+
     for (let i = 2; i < rows.length; i++) {
       const r = rows[i];
       if (!r || isRowEmpty(r)) continue;
 
-      const supplierNo = r[0];
-      const codeRaw = String(r[1] ?? "").trim();
-      const description = String(r[3] ?? "").trim();
-      const quantity = r[4];
-      const tagPrice = r[6];
-      const platingText = String(r[7] ?? "").trim();
-      const remark = String(r[8] ?? "").trim();
+      const supplierNo = cell(r, idxNo);
+      const codeRaw = String(cell(r, idxCode) ?? "").trim();
+      const description = String(cell(r, idxDescription) ?? "").trim();
+      const quantity = cell(r, idxQuantity);
+      const tagPrice = cell(r, idxTagPrice);
+      const platingText = String(cell(r, idxPlating) ?? "").trim();
+      const remark = String(cell(r, idxRemark) ?? "").trim();
       const sourceRow = i + 1;
 
       if (!codeRaw) continue; // spacer row with no code

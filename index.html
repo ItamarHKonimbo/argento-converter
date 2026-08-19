@@ -442,6 +442,8 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
   const variantCols = [
     ["arg_code_raw", "קוד ARG"],
     ["image", "תמונה"],
+    ["product_name", "שם מוצר"],
+    ["description_free", "תיאור"],
     ["tag", "תג"],
     ["category", "קטגוריה"],
     ["subcategory_final", "תת-קטגוריה"],
@@ -460,7 +462,13 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
     ["needs_review", "לבדיקה"]
   ];
   wsVariants.addRow(variantCols.map((c) => c[1]));
-  const emptyByDefault = new Set(["subcategory_final", "subsubcategory_final", "image"]);
+  const emptyByDefault = new Set([
+    "subcategory_final",
+    "subsubcategory_final",
+    "image",
+    "product_name",
+    "description_free"
+  ]);
   sortedParsed.forEach((row) => {
     wsVariants.addRow(variantCols.map(([key]) => (emptyByDefault.has(key) ? "" : row[key] ?? "")));
   });
@@ -475,6 +483,8 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
   setListDataValidation(wsVariants, colIdx("shape_he"), sortedParsed.length, rangeFor("G"));
   wsVariants.columns.forEach((col) => (col.width = 16));
   wsVariants.getColumn(colIdx("image")).width = 28;
+  wsVariants.getColumn(colIdx("product_name")).width = 26;
+  wsVariants.getColumn(colIdx("description_free")).width = 36;
 
   const imgColLetter = wsVariants.getColumn(colIdx("image")).letter;
   const imageStats = { fromFolder: 0, fromSourceFallback: 0, notFound: 0, unsupportedFormat: [] };

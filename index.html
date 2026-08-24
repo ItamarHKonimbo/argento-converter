@@ -121,7 +121,19 @@ const DEFAULT_TRANSLATIONS = {
     "oval": "אובלית",
     "drop": "טיפה",
     "heart": "לב",
-    "rectangle": "מלבן"
+    "rectangle": "מלבן",
+    "asscher": "אשר",
+    "radiant": "רדיאנט"
+  },
+  // קוד קיצור מעמודת "Stone Shape" בקובץ המקור (RD/MQ/OV/...) -> מפתח מתוך stone_shapes
+  stone_shape_codes: {
+    "RD": "round",
+    "MQ": "marquise",
+    "PE": "drop",
+    "OV": "oval",
+    "HT": "heart",
+    "AS": "asscher",
+    "RE": "radiant"
   },
   // צורת התכשיט/תליון הכללית
   shapes: {
@@ -151,15 +163,31 @@ const DICT_GROUPS = [
   { key: "materials", label: "צבע מתכת", type: "fixed-map" },
   { key: "stone_colors", label: "צבע אבן", type: "fixed-map" },
   { key: "stone_shapes", label: "צורת אבן (מזוהה מתוך התיאור)", type: "editable-map" },
+  { key: "stone_shape_codes", label: "קוד צורת אבן (עמודת Stone Shape בקובץ המקור, למשל RD/MQ/OV)", type: "editable-map" },
   { key: "shapes", label: "צורה כללית - תכשיט/תליון (מזוהה מתוך התיאור)", type: "editable-map" },
   { key: "subcategories", label: "תת-קטגוריה (רשימה לבחירה ידנית מה-dropdown)", type: "list" },
   { key: "subsubcategories", label: "תת-תת-קטגוריה (רשימה לבחירה ידנית מה-dropdown)", type: "list" }
 ];
 
+// ממזגים מילון שמור עם ברירת המחדל: כל קבוצה/ערך חדש שנוסף בעדכון של הכלי (כמו stone_shape_codes,
+// או "asscher"/"radiant" בתוך stone_shapes קיים) מופיע אוטומטית, בלי לדרוס עריכות קיימות של המשתמש
+function mergeTranslations(stored, defaults) {
+  const result = { ...defaults, ...stored };
+  Object.keys(defaults).forEach((key) => {
+    const defVal = defaults[key];
+    const storedVal = stored[key];
+    const bothPlainObjects =
+      defVal && typeof defVal === "object" && !Array.isArray(defVal) &&
+      storedVal && typeof storedVal === "object" && !Array.isArray(storedVal);
+    if (bothPlainObjects) result[key] = { ...defVal, ...storedVal };
+  });
+  return result;
+}
+
 function loadStoredTranslations() {
   try {
     const raw = localStorage.getItem(TRANSLATIONS_STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) return mergeTranslations(JSON.parse(raw), DEFAULT_TRANSLATIONS);
   } catch (e) {
     // localStorage לא זמין / JSON פגום - חוזרים לברירת המחדל
   }
@@ -199,6 +227,9 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
     const idxCode = colIndex("ARG code");
     const idxDescription = colIndex("Description");
     const idxQuantity = colIndex("quantity");
+    const idxSize = colIndex("Size");
+    const idxStoneShape = colIndex("Stone Shape");
+    const idxStoneSize = colIndex("Stone Size");
     const idxTagPrice = colIndex("tag price");
     const idxPlating = colIndex("Plating color");
     const idxRemark = colIndex("Remark");
@@ -211,6 +242,9 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
       const codeRaw = String(cell(r, idxCode) ?? "").trim();
       const description = String(cell(r, idxDescription) ?? "").trim();
       const quantity = cell(r, idxQuantity);
+      const sizeColumnRaw = String(cell(r, idxSize) ?? "").trim();
+      const stoneShapeCodeRaw = String(cell(r, idxStoneShape) ?? "").trim();
+      const stoneSizeColumnRaw = String(cell(r, idxStoneSize) ?? "").trim();
       const tagPrice = cell(r, idxTagPrice);
       const platingText = String(cell(r, idxPlating) ?? "").trim();
       const remark = String(cell(r, idxRemark) ?? "").trim();
@@ -257,26 +291,47 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
         }
       }
 
-      // מידה = מהקוד (מידת טבעת/צמיד), אם אין (A) - נשאר ריק
-      const sizeDisplay = sizeCode.toUpperCase() !== "A" ? sizeCode : "";
+      // מידה: מעדיפים את עמודת Size הגולמית מהמקור (כמו שהיא, אחרי הסרת # עוטף) - יש בה מידע
+      // אמיתי (למשל אורך שרשרת "40+5cm") שלא קיים בקוד ה-ARG; אם היא ריקה, נופלים לסיומת הקוד
+      // (רלוונטי בעיקר לטבעות, שבהן סיומת הקוד היא באמת מספר המידה)
+      const sizeFromColumn = sizeColumnRaw.replace(/^#+|#+$/g, "").trim();
+      const sizeFromCode = sizeCode.toUpperCase() !== "A" ? sizeCode : "";
+      const sizeDisplay = sizeFromColumn || sizeFromCode;
 
-      // גודל אבן (מ"מ) = טקסט עם mm בתיאור, למשל "9mm" / "5*19mm"
+      // גודל אבן (מ"מ): מעדיפים את עמודת Stone Size הגולמית; אם אין (קבצים ישנים) - fallback
+      // לחיפוש טקסט עם mm בתיאור, למשל "9mm" / "5*19mm"
       const isMmSize = subcategoryRaw && MM_SIZE_RE.test(subcategoryRaw);
-      const stoneSizeDisplay = isMmSize ? subcategoryRaw : "";
+      const stoneSizeFromDescription = isMmSize ? subcategoryRaw : "";
+      const stoneSizeDisplay = stoneSizeColumnRaw || stoneSizeFromDescription;
 
       // צורה: מנסים להתאים רק אם זה לא טקסט מידה
       const canAttemptShape = subcategoryRaw && !isMmSize && !/^\d+$/.test(subcategoryRaw);
+      const lowerSub = canAttemptShape ? subcategoryRaw.toLowerCase() : "";
+
+      // צורת אבן: מעדיפים את קוד Stone Shape (RD/MQ/OV/...) ממופה במילון stone_shape_codes;
+      // אם אין קוד (קבצים ישנים) - fallback להתאמת טקסט חופשי כמו קודם
       let stoneShapeHe = "";
-      let shapeHe = "";
       let stoneShapeFound = false;
-      let shapeFound = false;
-      if (canAttemptShape) {
-        const lowerSub = subcategoryRaw.toLowerCase();
+      let stoneShapeCodeUnknown = false;
+      if (stoneShapeCodeRaw) {
+        const mappedKey = translations.stone_shape_codes?.[stoneShapeCodeRaw.toUpperCase()];
+        if (mappedKey && translations.stone_shapes?.[mappedKey]) {
+          stoneShapeHe = translations.stone_shapes[mappedKey];
+          stoneShapeFound = true;
+        } else {
+          stoneShapeCodeUnknown = true;
+        }
+      } else if (canAttemptShape) {
         const stoneShapeKey = findKeyByMatch(translations.stone_shapes, lowerSub);
         if (stoneShapeKey) {
           stoneShapeHe = translations.stone_shapes[stoneShapeKey];
           stoneShapeFound = true;
         }
+      }
+
+      let shapeHe = "";
+      let shapeFound = false;
+      if (canAttemptShape) {
         const shapeKey = findKeyByMatch(translations.shapes, lowerSub);
         if (shapeKey) {
           shapeHe = translations.shapes[shapeKey];
@@ -287,7 +342,8 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
       const flagReasons = [];
       if (!stoneKeyKnown) flagReasons.push(`ספרת אבן ${stoneDigit} לא ברשימה הידועה`);
       if (baseEn && !hasTranslation) flagReasons.push(`אין תרגום ל-"${baseEn}"`);
-      if (canAttemptShape && !stoneShapeFound && !shapeFound) {
+      if (stoneShapeCodeUnknown) flagReasons.push(`קוד צורת אבן "${stoneShapeCodeRaw}" לא מוכר במילון`);
+      if (!stoneShapeCodeRaw && canAttemptShape && !stoneShapeFound && !shapeFound) {
         flagReasons.push(`לא נמצאה התאמת צורה עבור "${subcategoryRaw}"`);
       }
 

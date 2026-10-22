@@ -224,7 +224,8 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
       headerRow.findIndex((h) => String(h).trim().toLowerCase() === name.toLowerCase());
     const cell = (r, idx) => (idx >= 0 ? r[idx] : "");
     const idxNo = colIndex("No.");
-    const idxCode = colIndex("ARG code");
+    // החל מ-CI-2610 הספק שינה את שם עמודת הקוד מ-"ARG code" ל-"Old code"
+    const idxCode = colIndex("ARG code") >= 0 ? colIndex("ARG code") : colIndex("Old code");
     const idxDescription = colIndex("Description");
     const idxQuantity = colIndex("quantity");
     const idxSize = colIndex("Size");

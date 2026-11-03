@@ -195,6 +195,9 @@ function loadStoredTranslations() {
 }
 
 const CODE_RE = /^(\*)?([A-Z]+)(\d+)-(\d+)-(\d+)-(.+)$/;
+// קוד חדש (עמודת "New code", החל מ-CI-2611), למשל 100001E1100:
+// ספק + מספר דגם (כל הספרות לפני האות) + אות קטגוריה + ספרת פלטינג + ספרת אבן + מידה (2 ספרות, "00" = אין מידה בקוד)
+const NEW_CODE_RE = /^(\*)?(\d+)([A-Z])(\d)(\d)(\d{2})$/;
 const CI_RE = /CI-(\d+)/i;
 const MM_SIZE_RE = /\d+(\.\d+)?(\s*[*x×]\s*\d+(\.\d+)?)?\s*mm/i;
 
@@ -226,6 +229,7 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
     const idxNo = colIndex("No.");
     // החל מ-CI-2610 הספק שינה את שם עמודת הקוד מ-"ARG code" ל-"Old code"
     const idxCode = colIndex("ARG code") >= 0 ? colIndex("ARG code") : colIndex("Old code");
+    const idxNewCode = colIndex("New code");
     const idxDescription = colIndex("Description");
     const idxQuantity = colIndex("quantity");
     const idxSize = colIndex("Size");
@@ -235,12 +239,27 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
     const idxPlating = colIndex("Plating color");
     const idxRemark = colIndex("Remark");
 
+    // אם הספק ישנה שוב את שם עמודת הקוד - מדווחים בגיליון Errors במקום לדלג בשקט על כל השורות (כמו שקרה ב-2610)
+    if (idxCode < 0 && idxNewCode < 0) {
+      errors.push({
+        source_file: file.name,
+        source_sheet: sheetName,
+        source_row: 2,
+        arg_code_raw: "",
+        reason: "לא נמצאה עמודת קוד בשורת הכותרת (ARG code / Old code / New code)"
+      });
+      continue;
+    }
+
     for (let i = 2; i < rows.length; i++) {
       const r = rows[i];
       if (!r || isRowEmpty(r)) continue;
 
       const supplierNo = cell(r, idxNo);
-      const codeRaw = String(cell(r, idxCode) ?? "").trim();
+      const oldCodeRaw = String(cell(r, idxCode) ?? "").trim();
+      const newCodeRaw = String(cell(r, idxNewCode) ?? "").trim();
+      // כשיש קוד חדש - הוא הקובע (יש מוצרים עם קוד חדש בלבד); אחרת הקוד הישן
+      const codeRaw = newCodeRaw || oldCodeRaw;
       const description = String(cell(r, idxDescription) ?? "").trim();
       const quantity = cell(r, idxQuantity);
       const sizeColumnRaw = String(cell(r, idxSize) ?? "").trim();
@@ -253,7 +272,12 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
 
       if (!codeRaw) continue; // spacer row with no code
 
-      const m = codeRaw.match(CODE_RE);
+      // מזהים את סוג הקוד לפי הערך עצמו ולא לפי שם העמודה - אחרי 2611 יגיעו רק קודים חדשים,
+      // ולא ידוע מראש באיזו עמודה (New code / ARG code / Old code)
+      const n = codeRaw.match(NEW_CODE_RE);
+      const isNewCode = Boolean(n);
+      // מסדרים לאותו סדר קבוצות כמו CODE_RE: כוכבית, אות, בסיס, פלטינג, אבן, מידה
+      const m = n ? [n[0], n[1], n[3], n[2], n[4], n[5], n[6]] : codeRaw.match(CODE_RE);
       if (!m) {
         errors.push({
           source_file: file.name,
@@ -294,9 +318,9 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
 
       // מידה: מעדיפים את עמודת Size הגולמית מהמקור (כמו שהיא, אחרי הסרת # עוטף) - יש בה מידע
       // אמיתי (למשל אורך שרשרת "40+5cm") שלא קיים בקוד ה-ARG; אם היא ריקה, נופלים לסיומת הקוד
-      // (רלוונטי בעיקר לטבעות, שבהן סיומת הקוד היא באמת מספר המידה)
+      // (רלוונטי בעיקר לטבעות, שבהן סיומת הקוד היא באמת מספר המידה). "A" בקוד הישן / "00" בקוד החדש = אין מידה בקוד
       const sizeFromColumn = sizeColumnRaw.replace(/^#+|#+$/g, "").trim();
-      const sizeFromCode = sizeCode.toUpperCase() !== "A" ? sizeCode : "";
+      const sizeFromCode = sizeCode.toUpperCase() !== "A" && sizeCode !== "00" ? sizeCode : "";
       const sizeDisplay = sizeFromColumn || sizeFromCode;
 
       // גודל אבן (מ"מ): מעדיפים את עמודת Stone Size הגולמית; אם אין (קבצים ישנים) - fallback
@@ -344,13 +368,22 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
       if (!stoneKeyKnown) flagReasons.push(`ספרת אבן ${stoneDigit} לא ברשימה הידועה`);
       if (baseEn && !hasTranslation) flagReasons.push(`אין תרגום ל-"${baseEn}"`);
       if (stoneShapeCodeUnknown) flagReasons.push(`קוד צורת אבן "${stoneShapeCodeRaw}" לא מוכר במילון`);
+      if (newCodeRaw && oldCodeRaw) {
+        const o = oldCodeRaw.match(CODE_RE);
+        if (o && (o[2] !== letter || o[4] !== platingDigit || o[5] !== stoneDigit)) {
+          flagReasons.push(`הקוד הישן "${oldCodeRaw}" לא תואם לקוד החדש (קטגוריה/פלטינג/אבן)`);
+        }
+      }
       if (!stoneShapeCodeRaw && canAttemptShape && !stoneShapeFound && !shapeFound) {
         flagReasons.push(`לא נמצאה התאמת צורה עבור "${subcategoryRaw}"`);
       }
 
       // התמונות של הספק צולמו לפי בסיס+פלטינג+אבן בלבד - וריאנטים באותה מידה שונה (S/M/L, מידות טבעת)
       // חולקים את אותה תמונה, אז מפתח ההתאמה לתמונה לא כולל את המידה
-      const imageKey = `${letter}${baseSku}-${platingDigit}-${stoneDigit}`;
+      // בקוד החדש המספר לפני האות - מפתח נפרד כדי שלא יתנגש עם מפתחות של קודים ישנים
+      const imageKey = isNewCode
+        ? `${baseSku}${letter}-${platingDigit}-${stoneDigit}`
+        : `${letter}${baseSku}-${platingDigit}-${stoneDigit}`;
 
       parsed.push({
         source_file: file.name,
@@ -359,6 +392,7 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
         source_row: sourceRow,
         supplier_no: supplierNo,
         arg_code_raw: codeRaw,
+        old_code_raw: newCodeRaw ? oldCodeRaw : "",
         image_key: imageKey,
         type_letter: letter,
         tag,
@@ -402,6 +436,9 @@ function setListDataValidation(ws, colIdx, rowCount, listRangeRef) {
 // שמות קבצי התמונות של הספק לא תמיד מגיעים נקיים (רווח מקרי לפני המקף, מקף כפול וכו') -
 // מנקים רווחים ומקפים כפולים לפני חילוץ בסיס+פלטינג+אבן
 const IMAGE_KEY_RE = /^([A-Za-z]+)(\d+)-(\d+)-(\d+)/;
+// שמות תמונות בקוד החדש מגיעים בשתי צורות: "100001E1100" (פלטינג+אבן בתוך הקוד),
+// או "100012E1100-2-1" (קוד של הכסף + פלטינג-אבן אמיתיים בסיומת, שגוברת)
+const NEW_IMAGE_KEY_RE = /^(\d+)([A-Za-z])(\d)(\d)\d*(?:-(\d+)-(\d+))?/;
 
 function extractImageKey(rawName) {
   const cleaned = String(rawName)
@@ -412,6 +449,11 @@ function extractImageKey(rawName) {
   if (m) {
     const [, letter, base, plating, stone] = m;
     return `${letter.toUpperCase()}${base}-${plating}-${stone}`;
+  }
+  const n = cleaned.match(NEW_IMAGE_KEY_RE);
+  if (n) {
+    const [, base, letter, plating, stone, suffixPlating, suffixStone] = n;
+    return `${base}${letter.toUpperCase()}-${suffixPlating || plating}-${suffixStone || stone}`;
   }
   return cleaned.toUpperCase();
 }
@@ -620,7 +662,8 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
     ["source_sheet", "Sheet מקור"],
     ["source_row", "שורה במקור"],
     ["supplier_no", "מספר ספק (No.)"],
-    ["arg_code_raw", "קוד ARG"]
+    ["arg_code_raw", "קוד ARG"],
+    ["old_code_raw", "קוד ישן (Old code)"]
   ];
   wsSource.addRow(sourceCols.map((c) => c[1]));
   sortedParsed.forEach((row) => {

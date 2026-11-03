@@ -381,7 +381,12 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
     }
   }
 
-  return { parsed, errors };
+  // אותו מק"ט מופיע לפעמים פעמיים באותו קובץ - פעם כרגיל (בלי מחיר) ופעם כנטו (*) עם מחיר
+  // (למשל CI-2605). במקרה כזה שומרים רק את שורת הנטו
+  const netCodes = new Set(parsed.filter((p) => p.tag === "נטו").map((p) => p.arg_code_raw.slice(1)));
+  const deduped = parsed.filter((p) => p.tag === "נטו" || !netCodes.has(p.arg_code_raw));
+
+  return { parsed: deduped, errors };
 }
 
 function setListDataValidation(ws, colIdx, rowCount, listRangeRef) {

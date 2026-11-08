@@ -332,13 +332,18 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
       // (רלוונטי בעיקר לטבעות, שבהן סיומת הקוד היא באמת מספר המידה). "A" בקוד הישן / "00" בקוד החדש = אין מידה בקוד
       const sizeFromColumn = sizeColumnRaw.replace(/^#+|#+$/g, "").trim();
       const sizeFromCode = sizeCode.toUpperCase() !== "A" && sizeCode !== "00" ? sizeCode : "";
-      const sizeDisplay = sizeFromColumn || sizeFromCode;
+      // מ-CI-2611 הספק שם בעמודת Size ערך ב-mm של חישוקים (למשל "9mm"), שבקבצים הקודמים הגיע
+      // מהתיאור ונכנס לגודל אבן. כשאין Stone Size - ערך mm מ-Size הולך לגודל אבן ולא למידה,
+      // כמו בקבצים הקודמים. רק כשכל התא הוא מידה ב-mm - "S#\n54mm" (מידה + קוטר, CI-2605) או ס"מ
+      // (אורך צמיד "15cm") נשארים במידה
+      const sizeColumnIsStoneSize = !stoneSizeColumnRaw && /^\d+(\.\d+)?\s*mm$/i.test(sizeFromColumn);
+      const sizeDisplay = (sizeColumnIsStoneSize ? "" : sizeFromColumn) || sizeFromCode;
 
       // גודל אבן (מ"מ): מעדיפים את עמודת Stone Size הגולמית; אם אין (קבצים ישנים) - fallback
       // לחיפוש טקסט עם mm בתיאור, למשל "9mm" / "5*19mm"
       const isMmSize = subcategoryRaw && MM_SIZE_RE.test(subcategoryRaw);
       const stoneSizeFromDescription = isMmSize ? subcategoryRaw : "";
-      const stoneSizeDisplay = stoneSizeColumnRaw || stoneSizeFromDescription;
+      const stoneSizeDisplay = stoneSizeColumnRaw || (sizeColumnIsStoneSize ? sizeFromColumn : "") || stoneSizeFromDescription;
 
       // צורה: מנסים להתאים רק אם זה לא טקסט מידה
       const canAttemptShape = subcategoryRaw && !isMmSize && !/^\d+$/.test(subcategoryRaw);

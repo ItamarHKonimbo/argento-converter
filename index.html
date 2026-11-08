@@ -205,6 +205,17 @@ function isRowEmpty(row) {
   return row.every((c) => String(c ?? "").trim() === "");
 }
 
+// הספק שם לפעמים שני קודים באותו תא - רגיל ונטו של אותו מק"ט, בשתי שורות (למשל "100006B1115\n*100006B1115",
+// CI-2612). כמו בכלל של שורה רגילה + שורת נטו (ראו בסוף parseWorkbookFile) - לוקחים את הנטו.
+// שני מק"טים שונים באותו תא לא נוגעים - נשארים כמו שהם ומגיעים ל-Errors
+function pickCellCode(raw) {
+  const text = String(raw ?? "").trim();
+  const codes = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const net = codes.find((c) => c.startsWith("*"));
+  if (codes.length > 1 && net && codes.every((c) => c.replace(/^\*/, "") === net.slice(1))) return net;
+  return text;
+}
+
 function findKeyByMatch(dict, needleLower) {
   return Object.keys(dict || {}).find((k) => needleLower.includes(k.toLowerCase()));
 }
@@ -256,8 +267,8 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
       if (!r || isRowEmpty(r)) continue;
 
       const supplierNo = cell(r, idxNo);
-      const oldCodeRaw = String(cell(r, idxCode) ?? "").trim();
-      const newCodeRaw = String(cell(r, idxNewCode) ?? "").trim();
+      const oldCodeRaw = pickCellCode(cell(r, idxCode));
+      const newCodeRaw = pickCellCode(cell(r, idxNewCode));
       // כשיש קוד חדש - הוא הקובע (יש מוצרים עם קוד חדש בלבד); אחרת הקוד הישן
       const codeRaw = newCodeRaw || oldCodeRaw;
       const description = String(cell(r, idxDescription) ?? "").trim();

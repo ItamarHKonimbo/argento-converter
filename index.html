@@ -546,6 +546,9 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
     { key: "G", values: Object.values(translations.shapes || {}) }
   ];
 
+  // רשימות הבחירה לפי א"ב - כדי שיהיה קל למצוא ערך (ערכים שנוספו במילון לא קופצים לסוף הרשימה)
+  listGroups.forEach((group) => (group.values = [...group.values].sort((a, b) => String(a).localeCompare(String(b), "he"))));
+
   const wsLists = wb.addWorksheet("Lists");
   wsLists.state = "hidden";
   listGroups.forEach(({ key, values }) => {
@@ -572,6 +575,8 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
     ["stone_color", "צבע אבן"],
     ["stone_shape_he", "צורת אבן"],
     ["shape_he", "צורה"],
+    // צורה שנייה למוצר עם שתי צורות (למשל פרפר + לב) - ממלאים ידנית, מאותה רשימה של צורה
+    ["shape2_he", "צורה 2"],
     ["stone_size", "גודל אבן (מ\"מ)"],
     ["size_display", "מידה"],
     ["base_sku", "מספר בסיס"],
@@ -585,6 +590,7 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
   const emptyByDefault = new Set([
     "subcategory_final",
     "subsubcategory_final",
+    "shape2_he",
     "image",
     "product_name",
     "description_free"
@@ -601,6 +607,7 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
   setListDataValidation(wsVariants, colIdx("stone_color"), sortedParsed.length, rangeFor("E"));
   setListDataValidation(wsVariants, colIdx("stone_shape_he"), sortedParsed.length, rangeFor("F"));
   setListDataValidation(wsVariants, colIdx("shape_he"), sortedParsed.length, rangeFor("G"));
+  setListDataValidation(wsVariants, colIdx("shape2_he"), sortedParsed.length, rangeFor("G"));
   wsVariants.columns.forEach((col) => (col.width = 16));
   wsVariants.getColumn(colIdx("image")).width = 28;
   wsVariants.getColumn(colIdx("product_name")).width = 26;

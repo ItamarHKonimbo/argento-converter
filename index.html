@@ -66,7 +66,7 @@ function mapRemark(remarkText, platingText) {
 const DEFAULT_TRANSLATIONS = {
   base_types: {
     "earring": "עגיל",
-    "stud earring": "עגיל צמיד",
+    "stud earring": "עגיל צמוד",
     "ear cuff": "עגיל צמוד",
     "necklace": "שרשרת",
     "long necklace": "שרשרת ארוכה",
@@ -485,6 +485,84 @@ function buildFolderImageMap(imageFiles) {
   return map;
 }
 
+// דגמים חוזרים (שורות עם קוד ישן) כבר קיימים במדוזה - משם לוקחים שם, תיאור, קטגוריות ותמונה,
+// כדי שלא ימלאו אותם שוב. קריאה בלבד מה-Store API עם ה-publishable key (ציבורי מעצם הגדרתו).
+// עובד רק כשהממיר נטען מכתובת שמאושרת ב-STORE_CORS (ה-CloudFront של ארג'נטו)
+const MEDUSA_URL = "https://argento-rms.youleap.com";
+const MEDUSA_PUBLISHABLE_KEY = "pk_0af95aec79f1265b9830becf10a1bffdcc6815a23836afef05a88c325e0dddd2";
+
+const stripStar = (code) => String(code ?? "").trim().replace(/^\*/, "").toUpperCase();
+// מפתח תמונה של מק"ט בפורמט הישן, בלי המידה: N1000541-1-1-A -> N1000541-1-1
+const skuImageStem = (sku) => stripStar(sku).replace(/-[^-]+$/, "");
+
+async function fetchMedusaJson(path) {
+  const res = await fetch(`${MEDUSA_URL}${path}`, { headers: { "x-publishable-api-key": MEDUSA_PUBLISHABLE_KEY } });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function fetchMedusaCatalog() {
+  // ב-Store API השדה categories.name חוזר ריק - לוקחים רק id, ואת השמות והאבות מרשימת הקטגוריות
+  const { product_categories } = await fetchMedusaJson("/store/product-categories?limit=1000&fields=id,name,parent_category_id");
+  const products = [];
+  const limit = 100;
+  for (let offset = 0; ; offset += limit) {
+    const data = await fetchMedusaJson(
+      `/store/products?limit=${limit}&offset=${offset}&fields=id,title,description,external_id,categories.id,variants.sku,variants.thumbnail`
+    );
+    products.push(...(data.products || []));
+    if ((data.products || []).length < limit) break;
+  }
+  return buildMedusaIndex(products, product_categories || []);
+}
+
+// קטגוריה עליונה = הקטגוריה בעמודת קטגוריה (נגזרת כבר מאות הקוד); הבת שלה = תת-קטגוריה;
+// כל קטגוריה אחרת = תת-תת-קטגוריה (כמו ב-flow: קטגוריה נוספת שהמוצר שייך אליה)
+function buildMedusaIndex(products, categories) {
+  const catById = new Map(categories.map((c) => [c.id, c]));
+  const byFamily = new Map();
+  for (const p of products) {
+    if (!p.external_id) continue;
+    const cats = (p.categories || []).map((c) => catById.get(c.id)).filter(Boolean);
+    const root = cats.find((c) => !c.parent_category_id);
+    const sub = root && cats.find((c) => c.parent_category_id === root.id);
+    const extra = cats.find((c) => c !== root && c !== sub);
+    byFamily.set(p.external_id.toUpperCase(), {
+      title: p.title || "",
+      description: p.description || "",
+      subcategory: sub ? sub.name : "",
+      subsubcategory: extra ? extra.name : "",
+      imageByStem: new Map((p.variants || []).filter((v) => v.sku && v.thumbnail).map((v) => [skuImageStem(v.sku), v.thumbnail]))
+    });
+  }
+  return { byFamily };
+}
+
+// מוצר במדוזה = משפחה (אות + מספר בסיס של הקוד הישן, external_id). בודקים גם את הקוד החדש,
+// כדי שזה ימשיך לעבוד אחרי שהמק"טים במדוזה יעברו לפורמט החדש
+function attachMedusaMatches(rows, index) {
+  for (const row of rows) {
+    const old = stripStar(row.old_code_raw).match(CODE_RE);
+    // מפתח התמונה של השורה כבר בנוי לפי סוג הקוד שלה (N1000541-1-1 / 100110N-1-1) - המשפחה היא החלק הראשון
+    const ownStem = row.image_key.toUpperCase();
+    const candidates = [
+      old && { family: `${old[2]}${old[3]}`, stem: `${old[2]}${old[3]}-${old[4]}-${old[5]}` },
+      { family: ownStem.split("-")[0], stem: ownStem }
+    ].filter(Boolean);
+    const hit = candidates.find((c) => index.byFamily.has(c.family));
+    if (!hit) { row.medusa = null; continue; }
+    const product = index.byFamily.get(hit.family);
+    row.medusa = {
+      medusa_exists: "כן",
+      product_name: product.title,
+      description_free: product.description,
+      subcategory_final: product.subcategory,
+      subsubcategory_final: product.subsubcategory,
+      image_url: product.imageByStem.get(hit.stem) || null
+    };
+  }
+}
+
 const IMAGE_EMBED_MAX_DIMENSION = 500; // פיקסלים - זו תמונה ממוזערת בעמודה, לא צריך רזולוציה מלאה
 
 // כל תמונה (מכל פורמט שהדפדפן יודע לפענח - jpg/png/webp/bmp/...) עוברת הקטנה ודחיסה ל-JPEG
@@ -584,7 +662,8 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
     ["quantity", "כמות"],
     ["tag_price", "מחיר"],
     ["remark", "הערה"],
-    ["needs_review", "לבדיקה"]
+    ["needs_review", "לבדיקה"],
+    ["medusa_exists", "קיים במדוזה"]
   ];
   wsVariants.addRow(variantCols.map((c) => c[1]));
   const emptyByDefault = new Set([
@@ -593,10 +672,12 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
     "shape2_he",
     "image",
     "product_name",
-    "description_free"
+    "description_free",
+    "medusa_exists"
   ]);
+  // עמודות שנשארות ריקות למילוי ידני - אלא אם הדגם כבר קיים במדוזה, ואז ממולאות משם
   sortedParsed.forEach((row) => {
-    wsVariants.addRow(variantCols.map(([key]) => (emptyByDefault.has(key) ? "" : row[key] ?? "")));
+    wsVariants.addRow(variantCols.map(([key]) => (emptyByDefault.has(key) ? (row.medusa?.[key] ?? "") : row[key] ?? "")));
   });
 
   const colIdx = (key) => variantCols.findIndex((c) => c[0] === key) + 1;
@@ -614,7 +695,7 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
   wsVariants.getColumn(colIdx("description_free")).width = 36;
 
   const imgColLetter = wsVariants.getColumn(colIdx("image")).letter;
-  const imageStats = { fromFolder: 0, fromSourceFallback: 0, notFound: 0, unsupportedFormat: [] };
+  const imageStats = { fromFolder: 0, fromMedusa: 0, fromSourceFallback: 0, notFound: 0, unsupportedFormat: [] };
 
   // כל שורות המידה (S/M/L, מידות טבעת) של אותו בסיס+פלטינג+אבן חולקות תמונה אחת - מטמיעים אותה
   // פעם אחת בלבד ומשתמשים חזרה ב-imageId, במקום לקרוא/להקטין/להטמיע את אותו קובץ שוב לכל שורה
@@ -637,6 +718,27 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
     const imageId = wb.addImage({ buffer: prepared.buffer, extension: prepared.extension });
     folderImageIdCache.set(row.image_key, imageId);
     return { imageId, folderFile };
+  }
+
+  // תמונה של אותו צבע מהמוצר שכבר קיים במדוזה - כשהספק לא שלח תמונה לדגם חוזר
+  const medusaImageIdCache = new Map();
+  async function resolveMedusaImageId(row) {
+    const url = row.medusa?.image_url;
+    if (!url) return null;
+    if (!medusaImageIdCache.has(url)) {
+      medusaImageIdCache.set(url, (async () => {
+        try {
+          const res = await fetch(url);
+          if (!res.ok) return null;
+          const prepared = await prepareImageForEmbedding(await res.blob());
+          if (!prepared || !prepared.buffer || !prepared.buffer.byteLength) return null;
+          return wb.addImage({ buffer: prepared.buffer, extension: prepared.extension });
+        } catch (e) {
+          return null; // התמונה לא נגישה (רשת / CORS) - נשארים בלי תמונה, כמו קודם
+        }
+      })());
+    }
+    return medusaImageIdCache.get(url);
   }
 
   async function resolveSourceFallbackId(row) {
@@ -662,6 +764,10 @@ async function buildWorkbook(allParsed, allErrors, translations, folderImageMap,
     if (imageId !== null) {
       imageStats.fromFolder++;
     } else {
+      imageId = await resolveMedusaImageId(row);
+      if (imageId !== null) imageStats.fromMedusa++;
+    }
+    if (imageId === null) {
       imageId = await resolveSourceFallbackId(row);
       if (imageId !== null) imageStats.fromSourceFallback++;
     }
@@ -931,6 +1037,13 @@ function App() {
           fileImages.forEach((v, k) => sourceImagesMap.set(`${file.name}::${k}`, v));
         }
       }
+      // בלי חיבור למדוזה הממיר עובד כמו קודם - רק בלי סימון "קיים במדוזה" ובלי מילוי מראש
+      let medusaError = "";
+      try {
+        attachMedusaMatches(allParsed, await fetchMedusaCatalog());
+      } catch (e) {
+        medusaError = e.message || String(e);
+      }
       const { wb, imageStats } = await buildWorkbook(allParsed, allErrors, translations, folderImageMap, sourceImagesMap);
       const buffer = await wb.xlsx.writeBuffer();
       const blob = new Blob([buffer], { type: "application/octet-stream" });
@@ -941,7 +1054,9 @@ function App() {
         total: allParsed.length,
         errors: allErrors.length,
         flagged: flaggedCount,
-        imageStats
+        imageStats,
+        medusaMatched: allParsed.filter((v) => v.medusa).length,
+        medusaError
       });
     } catch (e) {
       setError("שגיאה בעיבוד הקבצים: " + e.message);
@@ -1043,7 +1158,12 @@ function App() {
             </div>
             {result.imageStats && (
               <p className="hint">
+                {result.medusaError
+                  ? <span className="flag">לא ניתן להתחבר למדוזה ({result.medusaError}) - הקובץ נוצר בלי סימון "קיים במדוזה" ובלי מילוי מראש</span>
+                  : `קיימים במדוזה: ${result.medusaMatched} שורות (שם, תיאור, קטגוריות ותמונה מולאו משם)`}
+                <br />
                 תמונות: {result.imageStats.fromFolder} מהתיקייה
+                {result.imageStats.fromMedusa > 0 && `, ${result.imageStats.fromMedusa} ממדוזה`}
                 {result.imageStats.fromSourceFallback > 0 && `, ${result.imageStats.fromSourceFallback} מהקובץ המקורי`}
                 , {result.imageStats.notFound} שורות בלי תמונה בכלל
                 {result.imageStats.unsupportedFormat.length > 0 &&

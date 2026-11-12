@@ -41,6 +41,8 @@ const { useState, useEffect } = React;
 const LETTER_TO_KEY = { E: "earrings", N: "necklaces", B: "bracelets", R: "rings" };
 const PLATING_DIGIT_TO_KEY = { "1": "rh", "2": "gold", "3": "rose" };
 const STONE_DIGIT_TO_KEY = { "0": "plain", "1": "white", "2": "blue", "3": "green", "4": "black", "6": "red", "7": "aqua", "8": "pink" };
+// בקוד החדש (מ-CI-2611) הספק מספר את צבעי האבן אחרת: 5 אדום, 6 טורקיז, 7 פינק, 8 פנינה (מפרט הספק 2026-11-11)
+const NEW_STONE_DIGIT_TO_KEY = { "0": "plain", "1": "white", "2": "blue", "3": "green", "4": "black", "5": "red", "6": "aqua", "7": "pink", "8": "pearl" };
 
 // סדר קטגוריות רצוי בפלט: שרשראות → צמידים → טבעות → עגילים
 const CATEGORY_SORT_ORDER = { N: 0, B: 1, R: 2, E: 3 };
@@ -98,7 +100,8 @@ const DEFAULT_TRANSLATIONS = {
     "black": "שחור",
     "red": "אדום",
     "aqua": "טורקיז",
-    "pink": "פינק"
+    "pink": "פינק",
+    "pearl": "פנינה"
   },
   // רמה 3: תת-קטגוריה - אפשר להוסיף כל ערך חדש שמתגלה
   subcategories: [
@@ -309,8 +312,9 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
       const materialKey = PLATING_DIGIT_TO_KEY[platingDigit] || "";
       const material = translations.materials?.[materialKey] || materialKey;
 
-      const stoneKeyKnown = Object.prototype.hasOwnProperty.call(STONE_DIGIT_TO_KEY, stoneDigit);
-      const stoneKey = stoneKeyKnown ? STONE_DIGIT_TO_KEY[stoneDigit] : "";
+      const stoneDigitMap = isNewCode ? NEW_STONE_DIGIT_TO_KEY : STONE_DIGIT_TO_KEY;
+      const stoneKeyKnown = Object.prototype.hasOwnProperty.call(stoneDigitMap, stoneDigit);
+      const stoneKey = stoneKeyKnown ? stoneDigitMap[stoneDigit] : "";
       const stoneColor = stoneKeyKnown ? (translations.stone_colors?.[stoneKey] || stoneKey) : stoneDigit;
 
       const descLines = description.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
@@ -386,7 +390,8 @@ function parseWorkbookFile(file, arrayBuffer, translations) {
       if (stoneShapeCodeUnknown) flagReasons.push(`קוד צורת אבן "${stoneShapeCodeRaw}" לא מוכר במילון`);
       if (newCodeRaw && oldCodeRaw) {
         const o = oldCodeRaw.match(CODE_RE);
-        if (o && (o[2] !== letter || o[4] !== platingDigit || o[5] !== stoneDigit)) {
+        // צבע האבן מושווה לפי הצבע ולא לפי הספרה - בשני הקודים יש מספור שונה (אדום: 6 בישן, 5 בחדש)
+        if (o && (o[2] !== letter || o[4] !== platingDigit || STONE_DIGIT_TO_KEY[o[5]] !== stoneKey)) {
           flagReasons.push(`הקוד הישן "${oldCodeRaw}" לא תואם לקוד החדש (קטגוריה/פלטינג/אבן)`);
         }
       }
@@ -493,7 +498,12 @@ const MEDUSA_PUBLISHABLE_KEY = "pk_0af95aec79f1265b9830becf10a1bffdcc6815a23836a
 
 const stripStar = (code) => String(code ?? "").trim().replace(/^\*/, "").toUpperCase();
 // מפתח תמונה של מק"ט בפורמט הישן, בלי המידה: N1000541-1-1-A -> N1000541-1-1
-const skuImageStem = (sku) => stripStar(sku).replace(/-[^-]+$/, "");
+// מק"ט במדוזה -> מפתח התמונה שלו, באותה צורה כמו image_key של השורה:
+// קוד חדש 100110N1100 -> 100110N-1-1 (המק"טים במדוזה עברו לקוד החדש ב-2026-11-12), קוד ישן N1000541-1-1-A -> N1000541-1-1
+const skuImageStem = (sku) => {
+  const n = stripStar(sku).match(NEW_CODE_RE);
+  return n ? `${n[2]}${n[3]}-${n[4]}-${n[5]}` : stripStar(sku).replace(/-[^-]+$/, "");
+};
 
 async function fetchMedusaJson(path) {
   const res = await fetch(`${MEDUSA_URL}${path}`, { headers: { "x-publishable-api-key": MEDUSA_PUBLISHABLE_KEY } });
